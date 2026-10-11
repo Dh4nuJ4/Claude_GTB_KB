@@ -18,6 +18,10 @@ def main() -> None:
     sub.add_parser("extract", help="turn pages and PDFs into clean text items")
     sub.add_parser("dedup", help="drop exact duplicates, report near-duplicates for review")
     sub.add_parser("bundle", help="build the upload/ folder for the Claude project")
+    dg = sub.add_parser("inspect", help="show how a few crawled pages were read (structure only, safe to share)")
+    dg.add_argument("--url", help="a specific crawled URL")
+    dg.add_argument("--count", type=int, default=3)
+    dg.add_argument("--preview", action="store_true", help="also print the start of the extracted text")
     al = sub.add_parser("all", help="crawl, extract, dedup and bundle in one go")
     al.add_argument("--refresh", action="store_true")
     args = ap.parse_args()
@@ -26,6 +30,10 @@ def main() -> None:
     if args.cmd == "login":
         from .login import login
         login(cfg, headless=args.headless)
+        return
+    if args.cmd == "inspect":
+        from .diagnose import diagnose
+        diagnose(cfg, url=args.url, count=args.count, preview=args.preview)
         return
     if args.cmd in ("crawl", "all"):
         from .crawl import crawl

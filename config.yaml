@@ -1,10 +1,16 @@
 # GTB DLP knowledge base export settings.
 # Anything left out here falls back to the defaults in gtbkb/config.py.
+#
+# The portal runs PHPKB: articles are article.php?id=N, categories category.php?id=N
+# (category.php alone lists them all). Every page carries the category tree and a table of
+# contents in a side column; the extractor scores candidate blocks so that doesn't leak into
+# the article text. Check with `python -m gtbkb inspect` after the first crawl.
 
 base_url: "https://kb.gttb.com/"
 login_url: "https://kb.gttb.com/login.php"
 start_urls:
   - "https://kb.gttb.com/"
+  - "https://kb.gttb.com/category.php"
 allowed_hosts:
   - "kb.gttb.com"
 
@@ -24,15 +30,14 @@ render_js: false
 # Add to this list (don't replace it) if the crawl report shows noisy URL patterns.
 extra_exclude_patterns: []
 
-# Regexes that identify article pages. Pages that don't match are still classified
-# as articles if they have enough prose and few links (see gtbkb/extract.py).
-# Fill these in once you've seen kb_data/crawl_report.txt.
+# Regexes that identify article pages (article.php?id=N is already a default).
+# Pages that don't match, like the Glossary, still count as articles if they have
+# enough prose and few links (see gtbkb/extract.py).
 extra_article_patterns: []
 
-# CSS selectors tried in order to find the article body / title / breadcrumb.
-# Prepended to the built-in defaults, so put the most specific ones here.
+# CSS selectors for the article body. Leave empty to let the extractor pick the block by score;
+# if `inspect` shows it picking the wrong block, put the right selector here and it always wins.
 extra_content_selectors: []
-extra_title_selectors: []
 extra_breadcrumb_selectors: []
 
 # Near-duplicate detection.

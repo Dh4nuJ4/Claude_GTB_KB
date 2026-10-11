@@ -45,7 +45,8 @@ it picks up where it left off. It never follows logout, rating, print/export, em
 search or sort links (see `exclude_patterns` in `gtbkb/config.py`).
 
 When it finishes, have a look at `kb_data/crawl_report.txt`. It holds only URL shapes and
-counts, no content, so it's safe to share if the numbers look off.
+counts, no content, so it's safe to share if the numbers look off. The portal's category
+counts add up to about 400 articles, so expect roughly that many `article.php?id=N` pages.
 
 **3. Extract, dedup, bundle.**
 
@@ -53,6 +54,16 @@ counts, no content, so it's safe to share if the numbers look off.
 python -m gtbkb extract
 python -m gtbkb dedup
 ```
+
+Check that a few articles were read properly:
+
+```bash
+python -m gtbkb inspect
+```
+
+It shows, for three sample articles, the title, category and which block of the page was
+taken as the article body, with structure and counts only, so it's safe to share. Add
+`--preview` to see the start of the extracted text yourself.
 
 Then review `kb_data/review/near_duplicates.csv` (see below), and build the upload folder:
 
@@ -97,16 +108,35 @@ other_files/             any non-PDF attachments, as downloaded
 Bundling per category keeps the file count down, and the `Source:` line on every article
 means Claude can point you back to the original page.
 
+## How article text is cleaned
+
+The portal runs PHPKB. Every page has the full category tree and a table of contents in a
+side column, and that has to stay out of the article text. Otherwise every article would
+share the same few hundred words, which wastes project space and makes unrelated articles
+look alike. Three things handle it:
+
+- **Body selection by score.** The extractor looks at the blocks around the article title and
+  scores each one as prose words minus link words. The article column wins; the
+  link-heavy tree and TOC lose.
+- **Template lines.** Any line that appears on at least half of all articles (like
+  "Was this article helpful? Yes No") is removed. Headings such as "Summary" are kept. What was
+  removed is listed in `kb_data/review/boilerplate_lines.txt`.
+- **Meta bar.** The "402 · Security Events · 0" bar under each title is dropped (the category
+  is in the article header anyway). Without this, the article's own ID would stop two
+  identical articles from matching as exact duplicates.
+
+Titles come from the article heading, so titles that contain " - " stay whole.
+
 ## Tuning for the real portal
 
-Defaults are written for a typical PHP knowledge base. After the first crawl, `extract`
-prints notes if something needs adjusting; all of it goes in `config.yaml`:
+After the first crawl, `extract` and `inspect` tell you if something needs adjusting;
+all of it goes in `config.yaml`:
 
 - **Articles missed or listing pages included:** add the article URL shape from
   `crawl_report.txt` to `extra_article_patterns`, e.g. `'article\.php\?id=\d+'`.
-- **Article text includes menus/sidebars**, or the note says it fell back to `<body>`:
+- **Article text includes menus/sidebars**, or `inspect` shows the wrong "Body taken":
   add the article container's CSS selector to `extra_content_selectors`
-  (in Chrome: right-click the article text → Inspect).
+  (in the browser: right-click the article text → Inspect).
 - **Noisy URLs in the report:** add a regex to `extra_exclude_patterns`.
 - **Article body empty in `kb_data/raw/pages/*.html`:** the portal renders with JavaScript;
   set `render_js: true`.
@@ -121,5 +151,7 @@ After changing the config, re-run `extract`, `dedup` and `bundle`. There's no ne
 python -m pytest -q
 ```
 
-Runs the whole pipeline against a local mock KB with a login wall, trap links
-(logout, rate, print, export, email, search) and planted duplicates of every kind above.
+Runs the whole pipeline against a local mock KB laid out like the real PHPKB portal
+(category tree and TOC beside every article, meta bar, two-level breadcrumbs, Glossary),
+with a login wall, trap links (logout, rate, print, export, email, subscribe, search,
+Ask a Question, the Account menu) and planted duplicates of every kind above.

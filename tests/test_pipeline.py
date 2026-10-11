@@ -14,6 +14,7 @@ from gtbkb.bundle import bundle
 from gtbkb.config import load_config, read_jsonl
 from gtbkb.crawl import crawl
 from gtbkb.dedup import dedup
+from gtbkb.diagnose import diagnose
 from gtbkb.extract import extract
 from gtbkb.login import login
 from gtbkb.urls import is_allowed, normalize
@@ -51,19 +52,27 @@ def test_end_to_end(kb, capsys):
 
     crawl(cfg)
     hits = mock_kb.Handler.hits
-    for trap in ("/logout.php", "/rate.php", "/print.php", "/export.php", "/email-article.php", "/search.php"):
+    for trap in mock_kb.TRAPS:
         assert hits[trap] == 0, f"crawler requested {trap}"
-    assert hits["/article.php"] == 8  # tracking params and #fragments collapsed: one fetch per article
+    assert hits["/article.php"] == 8  # tracking params, #fragments and sidebar repeats collapsed: one fetch each
     report = (work / "crawl_report.txt").read_text()
     assert "/article.php?id=N" in report
 
     extract(cfg)
     items = read_jsonl(work / "items.jsonl")
     arts = {i["title"]: i for i in items if i["type"] == "article"}
-    assert len(arts) == 8, sorted(arts)
-    assert arts["Installing the Endpoint Agent"]["category"] == "Endpoint"
-    assert arts["Installing the Endpoint Agent"]["updated"] == "March 5, 2024"
-    assert "Helpful" not in Path(arts["Installing the Endpoint Agent"]["path"]).read_text()  # rating widget stripped
+    assert set(arts) == {a[0] for a in mock_kb.ARTICLES.values()} | {"Glossary"}, sorted(arts)
+    assert arts["Glossary"]["classified_by"] == "shape"
+    install = arts["Installing the Endpoint Agent"]
+    assert install["category"] == "Endpoint > Installation"
+    assert install["updated"] == "March 5, 2024"
+    assert arts["Upgrading the Server - Linux and Windows"]["category"] == "Endpoint"
+    md = Path(install["path"]).read_text()
+    # PHPKB puts the category tree and a TOC next to every article; none of it may leak into the text.
+    for chrome in ("All Categories", "Table of Contents", "Network Share Scanning", "Release Notes", "Was this article helpful"):
+        assert chrome not in md, chrome
+    assert "## Summary" in md  # template headings shared by all articles are kept
+    assert mock_kb.BASE[1].split(". ")[0] in md
     pdfs = {i["filename"]: i for i in items if i["type"] == "pdf"}
     assert len(pdfs) == 4
     assert pdfs["Scanned_Datasheet.pdf"]["flags"] == ["needs_ocr"]
@@ -105,6 +114,11 @@ def test_end_to_end(kb, capsys):
     assert "Install Endpoint Agent (old link)" not in index
     inventory = rows(work / "review/final_inventory.csv")
     assert sum(r["status"] == "dropped" for r in inventory) == 3
+
+    diagnose(cfg, count=2)
+    shown = capsys.readouterr().out
+    assert "Body taken: div.col-8 (around title)" in shown
+    assert mock_kb.BASE[1][:40] not in shown  # structure only, no article text without --preview
 
     # Second crawl resumes from disk: no new requests to the server.
     before = sum(hits.values())
@@ -155,4 +169,27 @@ def test_expired_session_stops_and_resumes(kb):
         crawl(cfg)
     login(cfg, headless=True)
     crawl(cfg)
-    assert sum(1 for r in read_jsonl(work / "manifest.jsonl") if r.get("status") == "ok") == 19
+    assert sum(1 for r in read_jsonl(work / "manifest.jsonl") if r.get("status") == "ok") == 20
+
+
+@pytest.mark.parametrize("raw,clean", [
+    ("How to open the Tab delimited CSV/TSV Event Export file", "How to open the Tab delimited CSV/TSV Event Export file"),
+    ("Introduction - GTB Knowledge Base", "Introduction"),
+    ("Upgrading the Server - Linux and Windows", "Upgrading the Server - Linux and Windows"),
+    ("Migration Instructions for Central Console & GTB Inspector from v15 to v16 | GTB Knowledge Base",
+     "Migration Instructions for Central Console & GTB Inspector from v15 to v16"),
+])
+def test_clean_title(raw, clean):
+    from gtbkb.extract import _clean_title
+    assert _clean_title(raw) == clean
+
+
+@pytest.mark.parametrize("line,is_meta", [
+    ("402 [Security Events](https://kb.gttb.com/category.php?id=7) [0](https://kb.gttb.com/article.php?id=402#comments)", True),
+    ("402 [Security Events](x) Last Updated: March 5, 2024", True),
+    ("Open port 402 on the firewall.", False),  # real content that happens to contain the id
+    ("[Download the guide](https://kb.gttb.com/download.php?id=9)", False),  # no own id
+])
+def test_meta_line(line, is_meta):
+    from gtbkb.extract import _is_meta_line
+    assert _is_meta_line(line, "402", load_config(None)) is is_meta

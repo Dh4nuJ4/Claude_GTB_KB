@@ -43,11 +43,12 @@ def _first(soup: BeautifulSoup, selectors: list[str]):
     return None, None
 
 
+SITE_SUFFIX = re.compile(r"\s+[|\-–—:]\s+[^|\-–—]*\b(knowledge\s*base|help\s*cent(er|re)|support|kb|documentation)\b[^|\-–—]*$", re.I)
+
+
 def _clean_title(title: str) -> str:
-    title = " ".join(title.split())
-    # "Article name - GTB Knowledge Base" -> "Article name"
-    parts = re.split(r"\s+[|\-–—]\s+", title)
-    return parts[0] if len(parts) > 1 and len(parts[0]) > 3 else title
+    """"Article name - GTB Knowledge Base" -> "Article name", but "Upgrade - Linux" stays whole."""
+    return SITE_SUFFIX.sub("", " ".join(title.split())).strip()
 
 
 def _breadcrumb(soup: BeautifulSoup, cfg: dict[str, Any], title: str) -> list[str]:
@@ -59,27 +60,89 @@ def _breadcrumb(soup: BeautifulSoup, cfg: dict[str, Any], title: str) -> list[st
     for c in items:
         if c and c not in crumbs and c not in ("»", ">", "/", "›") and len(c) < 120:
             crumbs.append(c)
-    crumbs = [c for c in crumbs if c.lower() not in ("home", "knowledge base", "kb", "knowledgebase") and c != title]
-    return crumbs
+    skip = ("home", "knowledge base", "kb", "knowledgebase", "categories", "all categories")
+    return [c for c in crumbs if c.lower() not in skip and c != title]
 
 
-def _link_density(el) -> float:
-    total = len(el.get_text(" ", strip=True).split()) or 1
+def _words(el) -> tuple[int, int]:
+    """(words not inside links, words inside links)."""
+    total = len(el.get_text(" ", strip=True).split())
     linked = sum(len(a.get_text(" ", strip=True).split()) for a in el.find_all("a"))
-    return linked / total
+    return total - linked, linked
+
+
+def _describe(el) -> str:
+    ident = f"#{el['id']}" if el.get("id") else ""
+    classes = "".join(f".{c}" for c in (el.get("class") or [])[:3])
+    return f"{el.name}{ident}{classes}"
+
+
+def _title_heading(soup: BeautifulSoup, page_title: str):
+    h1s = [h for h in soup.find_all("h1") if h.get_text(strip=True)]
+    for h in h1s:
+        if _clean_title(h.get_text(" ", strip=True)).lower() == page_title.lower():
+            return h
+    # The banner may hold an h1 too (category name); the article title is the last one on the page.
+    return h1s[-1] if h1s else None
+
+
+def content_candidates(soup: BeautifulSoup, heading, cfg: dict[str, Any]) -> list[tuple[int, Any, str]]:
+    """Score possible article containers: prose counts for, link text (menus, category trees, TOCs) against."""
+    found: dict[int, tuple[Any, str]] = {}
+    for sel in cfg["content_selectors"]:
+        try:
+            for el in soup.select(sel):
+                found.setdefault(id(el), (el, sel))
+        except Exception:
+            continue
+    if heading is not None:
+        for anc in heading.parents:
+            if anc.name in ("body", "html", "[document]"):
+                break
+            found.setdefault(id(anc), (anc, "around title"))
+    scored = []
+    for el, how in found.values():
+        prose, linked = _words(el)
+        if prose:
+            scored.append((prose - linked, el, how))
+    # Best score first; on a tie the smaller (more specific) element wins.
+    scored.sort(key=lambda t: (-t[0], len(t[1].get_text(" ", strip=True))))
+    return scored
+
+
+def _own_id(url: str) -> str | None:
+    m = re.search(r"[?&](?:id|aid|article|art)=(\d+)", url, re.I)
+    return m.group(1) if m else None
+
+
+def _is_meta_line(line: str, own_id: str, cfg: dict[str, Any]) -> bool:
+    """PHPKB's bar under the title, e.g. "402 [Security Events](...) [0](#comments)": the article's own id,
+    links and maybe a date, nothing else. Its id would make identical articles hash differently."""
+    if not re.search(rf"(?<![\w.]){own_id}(?![\w.])", line):
+        return False
+    rest = re.sub(r"\[[^\]]*\]\([^)]*\)", " ", line)
+    rest = re.sub(cfg["updated_regex"], " ", rest, flags=re.I)
+    rest = re.sub(rf"(?<![\w.]){own_id}(?![\w.])", " ", rest)
+    return not re.search(r"[A-Za-z]{2,}", rest)
 
 
 def parse_page(html: str, url: str, cfg: dict[str, Any]) -> dict[str, Any]:
     soup = BeautifulSoup(html, "lxml")
-    title_el, _ = _first(soup, cfg["title_selectors"])
-    title = _clean_title(title_el.get_text(" ", strip=True)) if title_el else url
+    page_title = _clean_title(soup.title.get_text(" ", strip=True)) if soup.title else ""
+    heading = _title_heading(soup, page_title)
+    title = _clean_title(heading.get_text(" ", strip=True)) if heading is not None else (page_title or url)
     crumbs = _breadcrumb(soup, cfg, title)
     m = re.search(cfg["updated_regex"], soup.get_text(" ", strip=True), re.I)
     updated = m.group(1) if m else ""
 
-    body, selector = _first(soup, cfg["content_selectors"])
+    body, selector = _first(soup, cfg.get("extra_content_selectors") or [])  # explicit config wins
     if body is None:
-        body, selector = soup.body or soup, "body"
+        ranked = content_candidates(soup, heading, cfg)
+        if ranked:
+            _, body, how = ranked[0]
+            selector = f"{_describe(body)} ({how})"
+        else:
+            body, selector = soup.body or soup, "body"
     for sel in cfg["strip_selectors"]:
         try:
             for el in body.select(sel):
@@ -93,13 +156,18 @@ def parse_page(html: str, url: str, cfg: dict[str, Any]) -> dict[str, Any]:
         alt = img.get("alt", "").strip()
         img.replace_with(f"[image: {alt}]" if alt else "")
     # Drop the title heading from the body; it goes in the item header instead.
-    h1 = body.find("h1")
-    if h1 is not None and _clean_title(h1.get_text(" ", strip=True)) == title:
-        h1.decompose()
+    for h1 in body.find_all("h1"):
+        if _clean_title(h1.get_text(" ", strip=True)) == title:
+            h1.decompose()
+            break
 
-    words = len(body.get_text(" ", strip=True).split())
-    density = _link_density(body)
+    prose, linked = _words(body)
+    words = prose + linked
+    density = linked / (words or 1)
     md = markdownify(str(body), heading_style="ATX", bullets="-", strip=["span", "div"])
+    own_id = _own_id(url)
+    if own_id:
+        md = "\n".join(ln for ln in md.splitlines() if not _is_meta_line(ln, own_id, cfg))
     md = re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+\n", "\n", md)).strip()
 
     by_url = matches_article_pattern(url, cfg)
@@ -110,6 +178,30 @@ def parse_page(html: str, url: str, cfg: dict[str, Any]) -> dict[str, Any]:
         "is_article": by_url or by_shape,
         "classified_by": "url_pattern" if by_url else ("shape" if by_shape else "listing"),
     }
+
+
+def _line_key(line: str) -> str:
+    """A line with its link targets removed: "[Yes](...rate.php?id=7)" and "[Yes](...id=8)" are the same line."""
+    return re.sub(r"\]\([^)]*\)", "]", line.strip())
+
+
+def boilerplate_lines(markdowns: list[str], cfg: dict[str, Any]) -> dict[str, int]:
+    """Lines that recur on at least half the articles are page template, not content
+    (e.g. "Was this article helpful? Yes No"). Headings are never treated as boilerplate."""
+    if len(markdowns) < cfg["boilerplate_min_pages"]:
+        return {}
+    counts: dict[str, int] = {}
+    for md in markdowns:
+        for line in {_line_key(ln) for ln in md.splitlines()}:
+            if len(line) >= 3 and not line.startswith("#") and not re.fullmatch(r"[-*_|: ]+", line):
+                counts[line] = counts.get(line, 0) + 1
+    limit = max(cfg["boilerplate_min_pages"], cfg["boilerplate_share"] * len(markdowns))
+    return {line: n for line, n in counts.items() if n >= limit}
+
+
+def strip_lines(md: str, lines: dict[str, int]) -> str:
+    kept = [ln for ln in md.splitlines() if _line_key(ln) not in lines]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
 def parse_pdf(path: Path) -> dict[str, Any]:
@@ -149,27 +241,33 @@ def extract(cfg: dict[str, Any]) -> None:
     manifest = [r for r in read_jsonl(paths.manifest) if r.get("status") == "ok"]
     if not manifest:
         raise SystemExit("Nothing crawled yet. Run `python -m gtbkb crawl` first.")
-    by_url = {r["url"]: r for r in manifest}
     pages: dict[str, dict[str, Any]] = {}
     items: list[dict[str, Any]] = []
 
-    for rec in manifest:
-        if rec.get("kind") != "page":
-            continue
+    page_recs = [r for r in manifest if r.get("kind") == "page"]
+    for rec in page_recs:
         html = Path(rec["path"]).read_text(encoding="utf-8", errors="replace")
-        info = parse_page(html, rec.get("final_url") or rec["url"], cfg)
-        pages[rec["url"]] = info
-        if not info["is_article"]:
-            continue
+        pages[rec["url"]] = parse_page(html, rec.get("final_url") or rec["url"], cfg)
+
+    article_recs = [r for r in page_recs if pages[r["url"]]["is_article"]]
+    boiler = boilerplate_lines([pages[r["url"]]["markdown"] for r in article_recs], cfg)
+    report = paths.review / "boilerplate_lines.txt"
+    report.write_text("Lines removed from every article because they repeat across most pages (count  line):\n"
+                      + "".join(f"{n:>5}  {line}\n" for line, n in sorted(boiler.items(), key=lambda t: -t[1])),
+                      encoding="utf-8")
+
+    for rec in article_recs:
+        info = pages[rec["url"]]
+        md = strip_lines(info["markdown"], boiler)
         out = paths.extracted / f"{rec['id']}.md"
-        out.write_text(info["markdown"], encoding="utf-8")
+        out.write_text(md, encoding="utf-8")
         items.append({
             "id": rec["id"], "type": "article", "title": info["title"],
             "category": " > ".join(info["breadcrumb"]) or "General",
             "source_url": rec["url"], "updated": info["updated"], "words": info["words"],
-            "sha256": rec["sha256"], "text_sha256": text_hash(info["markdown"], cfg),
+            "sha256": rec["sha256"], "text_sha256": text_hash(md, cfg),
             "path": str(out), "raw_path": rec["path"], "classified_by": info["classified_by"],
-            "content_selector": info["content_selector"], "flags": [] if info["words"] else ["empty"],
+            "content_selector": info["content_selector"], "flags": [] if md.strip() else ["empty"],
         })
 
     def context_of(rec: dict[str, Any]) -> tuple[str, str]:
@@ -220,6 +318,8 @@ def extract(cfg: dict[str, Any]) -> None:
     if shape:
         print(f"Note: {shape} articles were recognised by shape, not URL pattern. "
               "If kb_data/crawl_report.txt shows the article URL shape, add it to extra_article_patterns.")
+    if boiler:
+        print(f"Removed {len(boiler)} template lines repeated across most articles -> {report}")
     fallback = sum(1 for it in items if it.get("content_selector") == "body")
     if fallback:
         print(f"Note: {fallback} articles fell back to the whole <body>; add the right selector to extra_content_selectors.")

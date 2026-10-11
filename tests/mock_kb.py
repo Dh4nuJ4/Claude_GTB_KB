@@ -27,10 +27,10 @@ def words(seed: int, n: int) -> str:
 
 BASE = {i: words(i, 220) for i in (1, 2, 3, 4, 7, 8)}
 ARTICLES = {
-    1: ("Installing the Endpoint Agent", "Endpoint", BASE[1], "March 5, 2024"),
+    1: ("Installing the Endpoint Agent", "Endpoint > Installation", BASE[1], "March 5, 2024"),
     2: ("Configuring Email Channel Policies", "Policies", BASE[2], "January 10, 2024"),
     3: ("Fingerprinting Overview", "Policies", BASE[3], "February 1, 2023"),
-    4: ("Upgrading the Server", "Endpoint", BASE[4], "April 2, 2024"),
+    4: ("Upgrading the Server - Linux and Windows", "Endpoint", BASE[4], "April 2, 2024"),
     5: ("Install Endpoint Agent (old link)", "Endpoint", BASE[1], "March 5, 2023"),  # exact text dup of 1
     6: ("Configuring Email Channel Policies (2025)", "Policies", BASE[2].replace("policy", "rule", 3) + " Updated for 2025.", "May 1, 2025"),  # near dup of 2
     7: ("Network Share Scanning", "Discovery", BASE[7], "June 6, 2024"),
@@ -38,6 +38,7 @@ ARTICLES = {
 }
 CATEGORIES = {1: ("Endpoint", [1, 4, 5]), 2: ("Policies", [2, 3, 6]), 3: ("Discovery", [7, 8])}
 CAT_ID = {name: c for c, (name, _) in CATEGORIES.items()}
+GLOSSARY = " ".join(f"<p><b>{w.title()}</b>: {words(200 + n, 18)}</p>" for n, w in enumerate(VOCAB[:12]))
 
 
 def make_pdf(text: str) -> bytes:
@@ -69,14 +70,28 @@ PDFS = {
 PDFS["copy"] = ("admin-guide-copy.pdf", PDFS["10"][1])  # identical bytes, different URL
 
 
-def page(title: str, body: str, crumbs: str = "") -> bytes:
-    return f"""<!doctype html><html><head><title>{title} - GTB Knowledge Base</title></head><body>
-<header><nav><a href="/index.php">Home</a> <a href="/search.php?q=agent">Search</a>
-<a href="/logout.php">Logout</a></nav></header>
-<div class="breadcrumb">{crumbs}</div>
-<div class="sidebar"><a href="/category.php?id=1">Endpoint</a> <a href="/category.php?id=2">Policies</a>
-<a href="/category.php?id=3">Discovery</a></div>
-{body}
+def sidebar(toc: list[str]) -> str:
+    """PHPKB-style right column: table of contents plus the full category tree, with no telltale classes."""
+    tree = "".join(
+        f'<li><a href="/category.php?id={c}">{name}</a> <span>{len(ids)}</span><ul>'
+        + "".join(f'<li><a href="/article.php?id={i}">{ARTICLES[i][0]}</a></li>' for i in ids) + "</ul></li>"
+        for c, (name, ids) in CATEGORIES.items())
+    toc_html = "".join(f'<li><a href="#s{n}">{t}</a></li>' for n, t in enumerate(toc))
+    return (f'<div class="col-4"><div class="box"><h4>Table of Contents</h4><ul>{toc_html}</ul></div>'
+            f'<div class="box"><div>All Categories</div><ul>{tree}</ul></div></div>')
+
+
+def page(title: str, main: str, crumbs: list[tuple[str, str]] = (), toc: list[str] = (), banner_h1: str = "") -> bytes:
+    crumb_html = "".join(f'<li><a href="{href}">{text}</a></li>' for text, href in
+                         [("Home", "/index.php"), ("Categories", "/category.php?id=1")] + list(crumbs)) if crumbs else ""
+    return f"""<!doctype html><html><head><title>{title}</title></head><body>
+<header><a href="/index.php"><img src="/logo.png" alt="GTB Technologies"></a>
+<nav><a href="/index.php">Home</a> <a href="/category.php?id=1">Release Notes</a> <a href="/search.php?q=">Search</a>
+<a href="/glossary.php">Glossary</a> <a href="/ask-question.php">Ask a Question</a>
+<a href="/my-profile.php">My Profile</a> <a href="/my-favorites.php">Favorites</a> <a href="/logout.php">Logout</a></nav></header>
+<div class="banner">{f"<h1>{banner_h1}</h1>" if banner_h1 else ""}<form action="/search.php"><input name="q" placeholder="Search..."></form></div>
+<ol class="breadcrumb">{crumb_html}</ol>
+<div class="content"><div class="row"><div class="col-8">{main}</div>{sidebar(list(toc))}</div></div>
 <footer>Copyright GTB <a href="/logout.php">Sign out</a></footer></body></html>""".encode()
 
 
@@ -105,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
         if form.get("username") == [USER] and form.get("password") == [PASSWORD]:
             self._send(302, headers={"Location": "/index.php", "Set-Cookie": f"kbsess={SESSION}; Path=/; HttpOnly"})
         else:
-            self._send(200, page("Login", '<p class="error">Invalid username or password</p>' + LOGIN_FORM))
+            self._send(200, f'<html><body><p class="error">Invalid username or password</p>{LOGIN_FORM}</body></html>'.encode())
 
     def do_GET(self) -> None:
         url = urlsplit(self.path)
@@ -117,16 +132,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(302, headers={"Location": "/login.php"})
         if url.path in ("/", "/index.php"):
             links = "".join(f'<li><a href="/category.php?id={c}">{name}</a></li>' for c, (name, _) in CATEGORIES.items())
-            return self._send(200, page("Home", f"<main><h1>Knowledge Base</h1><ul>{links}</ul></main>"))
+            return self._send(200, page("GTB Knowledge Base", f"<ul>{links}</ul>", banner_h1="How can we help?"))
+        if url.path == "/glossary.php":
+            return self._send(200, page("Glossary - GTB Knowledge Base", GLOSSARY, [("Glossary", "/glossary.php")],
+                                        banner_h1="Glossary"))
         if url.path == "/category.php":
             name, ids = CATEGORIES[int(q["id"])]
             pg = int(q.get("page", 1))
             shown = ids[:2] if pg == 1 else ids[2:]
             links = "".join(f'<li><a href="/article.php?id={i}&utm_source=nav#top">{ARTICLES[i][0]}</a></li>' for i in shown)
             more = f'<a href="/category.php?id={q["id"]}&page=2">Next page</a>' if pg == 1 and len(ids) > 2 else ""
-            sort = f'<a href="/category.php?id={q["id"]}&sort=title">Sort by title</a>'
-            return self._send(200, page(name, f"<main><h1>{name}</h1><ul>{links}</ul>{more} {sort}</main>",
-                                        '<a href="/index.php">Home</a> &gt; ' + name))
+            sort = f'<a href="/category.php?id={q["id"]}&sort=priority&order=asc">Priority</a>'
+            return self._send(200, page(f"{name} - GTB Knowledge Base", f"<ul>{links}</ul>{more} {sort}",
+                                        [(name, f"/category.php?id={q['id']}")], banner_h1=name))
         if url.path == "/article.php":
             i = int(q["id"])
             title, cat, text, updated = ARTICLES[i]
@@ -138,19 +156,25 @@ class Handler(BaseHTTPRequestHandler):
                          '<li><a href="/files/admin-guide-copy.pdf">Admin Guide (mirror)</a></li>'
                          '<li><a href="/download.php?id=11">Admin Guide 7.1</a></li>'
                          '<li><a href="/download.php?id=12">Datasheet</a></li></ul>')
-            body = (f'<div id="article-content"><h1>{title}</h1><p class="meta">Last Updated: {updated}</p>{paras}{extra}'
-                    f'<div class="rating"><a href="/rate.php?id={i}&v=5">Helpful</a></div></div>'
-                    f'<a href="/print.php?id={i}">Print</a> <a href="/export.php?id={i}&type=pdf">PDF</a>'
-                    f' <a href="/email-article.php?id={i}">Email</a>')
-            return self._send(200, page(title, body, f'<a href="/index.php">Home</a> &gt; <a href="/category.php?id={CAT_ID[cat]}">{cat}</a>'))
+            top, *sub = cat.split(" > ")
+            crumbs = [(top, f"/category.php?id={CAT_ID[top]}")] + [(c, f"/category.php?id={CAT_ID[top]}") for c in sub]
+            main = (f'<h1>{title}</h1><div class="meta"><span>{i}</span> <a href="/category.php?id={CAT_ID[top]}">{top}</a>'
+                    f' <a href="#comments">0</a> <span>Last Updated: {updated}</span></div>'
+                    f'<div class="kbx-body"><h2>Summary</h2>{paras}{extra}</div>'
+                    f'<p>Was this article helpful? <a href="/rate.php?id={i}&v=1">Yes</a> <a href="/rate.php?id={i}&v=0">No</a></p>'
+                    f'<a href="/print-article.php?id={i}">Print</a> <a href="/export.php?id={i}&type=pdf">PDF</a>'
+                    f' <a href="/email-article.php?id={i}">Email</a> <a href="/subscribe-article.php?id={i}">Subscribe</a>')
+            return self._send(200, page(title, main, crumbs, toc=["Summary"]))
         if url.path in ("/download.php", "/files/admin-guide-copy.pdf"):
             name, data = PDFS[q.get("id", "copy")]
             return self._send(200, data, "application/pdf", {"Content-Disposition": f'attachment; filename="{name}"'})
-        if url.path in ("/logout.php", "/rate.php", "/print.php", "/export.php", "/email-article.php", "/search.php"):
+        if url.path in TRAPS:
             return self._send(200, b"<html><body>trap</body></html>")
         self._send(404, b"not found")
 
 
+TRAPS = ("/logout.php", "/rate.php", "/print-article.php", "/export.php", "/email-article.php", "/search.php",
+         "/subscribe-article.php", "/ask-question.php", "/my-profile.php", "/my-favorites.php")
 LOGIN_FORM = ('<form method="post" action="/login.php"><input type="text" name="username">'
               '<input type="password" name="password"><button type="submit">Log in</button></form>')
 

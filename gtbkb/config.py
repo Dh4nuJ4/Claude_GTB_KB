@@ -28,7 +28,9 @@ DEFAULTS: dict[str, Any] = {
     "exclude_patterns": [
         # session / account
         r"/(logout|logoff|log-out|signout|sign-out)(\.php|/|\?|$)",
-        r"/(login|signin|register|signup|forgot[-_a-z]*|lost[-_]?password|reset[-_]?password|my[-_]?account|account|profile|settings)(\.php|/|\?|$)",
+        r"/(login|signin|register|signup|forgot[-_a-z]*|lost[-_]?password|reset[-_]?password|change[-_]?password|account|profile|settings)(\.php|/|\?|$)",
+        r"/my[-_a-z]*(\.php|/|\?|$)",  # PHPKB account menu: my-profile, my-favorites, my-subscriptions ...
+        r"/ask[-_a-z]*(\.php|/|\?|$)", r"/(contact|ticket|request)[-_a-z]*\.php",
         # anything that writes to the portal or produces a copy of an article
         r"/(rate|rating|vote|subscribe|unsubscribe|favou?rites?|bookmarks?|comments?|feedback|delete|remove|add|edit|update|save|submit|post)[-_a-z]*(\.php|/|\?|$)",
         r"/(print|email|export|share|send|mail)[-_a-z]*(\.php|/|\?|$)",
@@ -59,8 +61,6 @@ DEFAULTS: dict[str, Any] = {
         "[itemprop=articleBody]", "#content", ".content", "main", "#main",
     ],
     "extra_content_selectors": [],
-    "title_selectors": ["h1.article-title", ".article-title", "#article-title", "[itemprop=headline]", "article h1", "h1", "title"],
-    "extra_title_selectors": [],
     "breadcrumb_selectors": [".breadcrumb", ".breadcrumbs", "#breadcrumb", "#breadcrumbs", "nav[aria-label=breadcrumb]", "[itemtype*=BreadcrumbList]", ".crumbs"],
     "extra_breadcrumb_selectors": [],
     # Removed from the article body before converting to Markdown.
@@ -74,6 +74,10 @@ DEFAULTS: dict[str, Any] = {
                      r"([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+[A-Za-z]{3,9}\.?,?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}[/.]\d{1,2}[/.]\d{2,4})",
     # Heuristic classification for pages that don't match an article pattern.
     "min_article_words": 80,
+    # A line found on at least this share of article pages (and on boilerplate_min_pages or more)
+    # is page template, not content, and is removed.
+    "boilerplate_share": 0.5,
+    "boilerplate_min_pages": 5,
     "max_link_density": 0.4,
     "near_duplicate_threshold": 0.80,
     "containment_threshold": 0.90,
@@ -89,7 +93,6 @@ EXTENDS = {
     "extra_exclude_patterns": "exclude_patterns",
     "extra_article_patterns": "article_patterns",
     "extra_content_selectors": "content_selectors",
-    "extra_title_selectors": "title_selectors",
     "extra_breadcrumb_selectors": "breadcrumb_selectors",
 }
 
@@ -135,7 +138,8 @@ def load_config(path: str | Path | None) -> dict[str, Any]:
         for key, value in user.items():
             if key in EXTENDS:
                 target = EXTENDS[key]
-                cfg[target] = list(value or []) + cfg[target]
+                cfg[key] = list(value or [])
+                cfg[target] = cfg[key] + cfg[target]
             else:
                 cfg[key] = value
     return cfg
