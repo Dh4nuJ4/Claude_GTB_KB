@@ -1,0 +1,9 @@
+# Downloaded KB content, saved session cookies and generated output: never commit these.
+kb_data/
+*.state.json
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

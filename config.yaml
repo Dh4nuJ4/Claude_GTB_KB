@@ -1,0 +1,47 @@
+# GTB DLP knowledge base export settings.
+# Anything left out here falls back to the defaults in gtbkb/config.py.
+
+base_url: "https://kb.gttb.com/"
+login_url: "https://kb.gttb.com/login.php"
+start_urls:
+  - "https://kb.gttb.com/"
+allowed_hosts:
+  - "kb.gttb.com"
+
+# Where everything downloaded/generated goes. Keep it out of git (see .gitignore).
+workdir: "kb_data"
+
+# Be polite to the portal: seconds to wait between requests.
+delay_seconds: 0.5
+max_requests: 3000
+
+# Set to true only if article bodies are rendered by JavaScript
+# (i.e. the saved HTML in kb_data/raw/pages is missing the article text).
+render_js: false
+
+# URLs matching any of these regexes are never requested.
+# Anything that could change state on the portal (logout, rating, subscribing...) must be here.
+# Add to this list (don't replace it) if the crawl report shows noisy URL patterns.
+extra_exclude_patterns: []
+
+# Regexes that identify article pages. Pages that don't match are still classified
+# as articles if they have enough prose and few links (see gtbkb/extract.py).
+# Fill these in once you've seen kb_data/crawl_report.txt.
+extra_article_patterns: []
+
+# CSS selectors tried in order to find the article body / title / breadcrumb.
+# Prepended to the built-in defaults, so put the most specific ones here.
+extra_content_selectors: []
+extra_title_selectors: []
+extra_breadcrumb_selectors: []
+
+# Near-duplicate detection.
+near_duplicate_threshold: 0.80   # Jaccard similarity of 5-word shingles
+containment_threshold: 0.90      # share of the smaller doc found inside the bigger one
+
+# How PDFs go into the Claude project: "text" (extracted Markdown),
+# "original" (the PDF itself) or "both".
+pdf_mode: "text"
+
+# Split category bundles larger than this many characters into parts.
+bundle_max_chars: 400000
